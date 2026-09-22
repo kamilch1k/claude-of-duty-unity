@@ -35,6 +35,7 @@ public static class CodmModelBuilder
         public Part[] parts;
         public Node[] rootNodes;
         public WorldSpecs specs;
+        public Rig rig;
         public int binBytes;
     }
 
@@ -51,13 +52,33 @@ public static class CodmModelBuilder
     public class MeshEntry
     {
         public string material;
+        public int materialIndex;
         public int vertexCount;
         public int indexCount;
         public int tris;
         public Range position;
         public Range normal;
         public Range color;
+        public Range skinIndex;
+        public Range skinWeight;
         public Range index;
+    }
+
+    [Serializable]
+    public class Rig
+    {
+        public Bone[] bones;
+    }
+
+    [Serializable]
+    public class Bone
+    {
+        public string name;
+        public int parent;
+        public float[] localPos;
+        public float[] localQuat;
+        public float[] bindPos;
+        public float[] bindQuat;
     }
 
     [Serializable]
@@ -151,9 +172,6 @@ public static class CodmModelBuilder
                 if (mesh == null) continue;
                 AssetDatabase.CreateAsset(mesh, $"{dir}/{manifest.id}_{part.node}.asset");
 
-                var filter = go.AddComponent<MeshFilter>();
-                filter.sharedMesh = mesh;
-                var renderer = go.AddComponent<MeshRenderer>();
                 var mats = new Material[part.meshes.Length];
                 for (int i = 0; i < part.meshes.Length; i++)
                 {
@@ -164,18 +182,47 @@ public static class CodmModelBuilder
                         missingMaterials++;
                     }
                 }
-                renderer.sharedMaterials = mats;
-                renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
 
-                // Level geometry is what the player walks on and shoots at, so
-                // it needs collision. A mesh collider per material bucket is
-                // coarse — one bucket can be most of the street — but it is
-                // exact, which is what matters before anything is optimised.
-                if (world)
+                bool skinned = manifest.kind == "soldier" && manifest.rig?.bones != null;
+                if (skinned)
                 {
-                    go.isStatic = true;
-                    var collider = go.AddComponent<MeshCollider>();
-                    collider.sharedMesh = mesh;
+                    // Real skinning: the bake ships the weights CharacterBuilder
+                    // computed against the rig's bind-pose segments, so the port
+                    // animates a proper skeleton rather than sliding a mannequin.
+                    var weights = new BoneWeight[mesh.vertexCount];
+                    int vBase = 0;
+                    foreach (var e in part.meshes)
+                    {
+                        ReadSkin(blob, e, vBase, weights);
+                        vBase += e.vertexCount;
+                    }
+                    var bones = BuildBones(go, manifest.rig, out var bindposes);
+                    mesh.boneWeights = weights;
+                    mesh.bindposes = bindposes;
+                    var smr = go.AddComponent<SkinnedMeshRenderer>();
+                    smr.sharedMesh = mesh;
+                    smr.bones = bones;
+                    smr.rootBone = bones.Length > 0 ? bones[0] : go.transform;
+                    smr.sharedMaterials = mats;
+                }
+                else
+                {
+                    var filter = go.AddComponent<MeshFilter>();
+                    filter.sharedMesh = mesh;
+                    var renderer = go.AddComponent<MeshRenderer>();
+                    renderer.sharedMaterials = mats;
+                    renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+
+                    // Level geometry is what the player walks on and shoots at, so
+                    // it needs collision. A mesh collider per material bucket is
+                    // coarse — one bucket can be most of the street — but it is
+                    // exact, which is what matters before anything is optimised.
+                    if (world)
+                    {
+                        go.isStatic = true;
+                        var collider = go.AddComponent<MeshCollider>();
+                        collider.sharedMesh = mesh;
+                    }
                 }
             }
 
@@ -197,6 +244,57 @@ public static class CodmModelBuilder
         Debug.Log($"[port] {manifest.id}: {manifest.tris} tris, {manifest.parts.Length} parts -> {prefabPath}" +
                   (missingMaterials > 0 ? $" ({missingMaterials} missing materials)" : ""));
         return true;
+    }
+
+    /// <summary>Rebuild the skeleton the bake exported, under the actor root.</summary>
+    static Transform[] BuildBones(GameObject root, Rig rig, out Matrix4x4[] bindposes)
+    {
+        var bones = new Transform[rig.bones.Length];
+        bindposes = new Matrix4x4[rig.bones.Length];
+        for (int i = 0; i < rig.bones.Length; i++)
+        {
+            var spec = rig.bones[i];
+            var go = new GameObject(spec.name);
+            bones[i] = go.transform;
+            if (spec.localPos is { Length: >= 3 })
+                go.transform.localPosition = new Vector3(spec.localPos[0], spec.localPos[1], spec.localPos[2]);
+            if (spec.localQuat is { Length: >= 4 })
+                go.transform.localRotation = new Quaternion(spec.localQuat[0], spec.localQuat[1], spec.localQuat[2], spec.localQuat[3]);
+
+            // A bind pose is the inverse of the bone's world transform when the
+            // mesh was authored; the bake ships both transforms per bone so the
+            // port never has to invert a hierarchy at runtime.
+            var pos = spec.bindPos is { Length: >= 3 } ? new Vector3(spec.bindPos[0], spec.bindPos[1], spec.bindPos[2]) : Vector3.zero;
+            var rot = spec.bindQuat is { Length: >= 4 }
+                ? new Quaternion(spec.bindQuat[0], spec.bindQuat[1], spec.bindQuat[2], spec.bindQuat[3])
+                : Quaternion.identity;
+            bindposes[i] = Matrix4x4.TRS(pos, rot, Vector3.one).inverse;
+        }
+        for (int i = 0; i < rig.bones.Length; i++)
+        {
+            int parent = rig.bones[i].parent;
+            bones[i].SetParent(parent >= 0 ? bones[parent] : root.transform, false);
+        }
+        return bones;
+    }
+
+    static void ReadSkin(byte[] blob, MeshEntry entry, int vBase, BoneWeight[] weights)
+    {
+        var idx = new ushort[entry.vertexCount * 4];
+        var wgt = new float[entry.vertexCount * 4];
+        Buffer.BlockCopy(blob, entry.skinIndex.offset, idx, 0, idx.Length * 2);
+        Buffer.BlockCopy(blob, entry.skinWeight.offset, wgt, 0, wgt.Length * 4);
+        for (int i = 0; i < entry.vertexCount; i++)
+        {
+            var w = new BoneWeight
+            {
+                boneIndex0 = idx[i * 4], weight0 = wgt[i * 4],
+                boneIndex1 = idx[i * 4 + 1], weight1 = wgt[i * 4 + 1],
+                boneIndex2 = idx[i * 4 + 2], weight2 = wgt[i * 4 + 2],
+                boneIndex3 = idx[i * 4 + 3], weight3 = wgt[i * 4 + 3],
+            };
+            weights[vBase + i] = w;
+        }
     }
 
     /// <summary>
@@ -286,9 +384,10 @@ public static class CodmModelBuilder
         mesh.RecalculateBounds();
         _ = totalTris;
 
-        // Weld small numerical drift the procedural builder leaves behind; the
-        // geometry arrives non-indexed from single-piece buckets in places.
-        MeshUtility.Optimize(mesh);
+        // No MeshUtility.Optimize here: it can merge vertices, which changes the
+        // vertex count after the caller has already sized a bone-weight array to
+        // match — and a skinned mesh whose weights do not line up with its
+        // vertices fails the import. The geometry is welded upstream anyway.
         return mesh;
     }
 

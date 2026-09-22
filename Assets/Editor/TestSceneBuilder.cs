@@ -247,6 +247,7 @@ public static class TestSceneBuilder
             enemy.muzzleFlash = flashE;
             enemy.fireClip = LoadClip("weapon_rifle_3p");
             enemy.deathClip = LoadClip("bodyfall");
+            soldier.AddComponent<SoldierAnimator>();
             enemies.Add(enemy);
             index++;
         }
