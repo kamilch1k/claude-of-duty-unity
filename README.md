@@ -19,9 +19,12 @@ generators in Chromium and writes real assets this project imports.
 | Player movement tuning | **done** — `PlayerTuning.cs`, transcribed from tuning.js |
 | Player motor (walk/sprint/tac-sprint/crouch/jump/look/FOV) | **done**, `PlayerMotor.cs` |
 | Test range scene with the rifle in first person | **done**, `Assets/Scenes/TestRange.unity` |
-| World geometry (market street, buildings, interiors, props) | not started |
+| World geometry (the market street) | **done** — baked from the game's own world subsystem |
+| Weapon firing (hitscan, rate of fire, magazine, reload, spread, recoil) | **done** — `WeaponSystem.cs` |
+| Targets that take damage and die | **done** — `Target.cs` |
+| Playable scene | **done** — `Assets/Scenes/Street.unity` |
 | Skinned soldiers + animation clips | not started |
-| Weapon definitions, ballistics, AI | not started |
+| Ballistics (travel time, drop, penetration), AI, HUD, FX, audio wiring | not started |
 
 ## Opening it
 
@@ -53,7 +56,13 @@ npx playwright install chromium
 node tools/bake/bake-textures.mjs   # 34 sets  -> ../claude-of-duty-unity/Assets/Art/Textures
 node tools/bake/bake-meshes.mjs     # 3 weapons -> ../claude-of-duty-unity/Assets/Art/Models
 node tools/bake/bake-audio.mjs      # 114 wavs  -> ../claude-of-duty-unity/Assets/Art/Audio
+node tools/bake/bake-world.mjs      # the street -> ../claude-of-duty-unity/Assets/Art/Models/world
 ```
+
+Then in Unity, `Claude of Duty ▸ Run All` builds the materials and prefabs,
+`Claude of Duty ▸ Build Street Scene` assembles the playable scene, and
+`Claude of Duty ▸ Build Test Range and Render` does all of it and writes a
+first-person frame plus a firing verification to `tools/bake/out/unity`.
 
 Both scripts take `--out=<dir>` to write somewhere else, `--only=a,b` to bake a
 subset, and `--size=` for the texture bake (1024 default; the surfaces were

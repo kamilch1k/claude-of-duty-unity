@@ -294,6 +294,85 @@ public static class PortPipeline
         AssetDatabase.CreateFolder(parent, leaf);
     }
 
+    // ----------------------------------------------------- world variants --
+
+    /// <summary>
+    /// The level does not use the 19 library surfaces directly: it buckets
+    /// geometry by a composite key carrying that building's own tint, tile size
+    /// and wear amounts, e.g.
+    ///   concrete|scale=2.5,tint=11117722,vertexMasks=true
+    /// so a street of one surface still reads as many materials. Those variants
+    /// are built here by copying the base surface and applying the differences —
+    /// detile and weather are dropped, which the README lists as remaining work.
+    /// </summary>
+    public static Material GetOrCreateVariant(string key)
+    {
+        var parts = key.Split('|');
+        var baseKey = parts[0];
+        var opts = new Dictionary<string, string>();
+        if (parts.Length > 1)
+        {
+            foreach (var pair in parts[1].Split(','))
+            {
+                var eq = pair.IndexOf('=');
+                if (eq > 0) opts[pair.Substring(0, eq).Trim()] = pair.Substring(eq + 1).Trim();
+            }
+        }
+
+        var safe = baseKey + "_" + Mathf.Abs(key.GetHashCode()).ToString("x8");
+        var dir = $"{MaterialsRoot}/world";
+        EnsureFolder(dir);
+        var path = $"{dir}/{safe}.mat";
+        var existing = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (existing != null) return existing;
+
+        var template = AssetDatabase.LoadAssetAtPath<Material>($"{MaterialsRoot}/library/{baseKey}.mat");
+        if (template == null) return null;
+
+        var mat = new Material(template) { name = key };
+        if (opts.TryGetValue("scale", out var scaleText) &&
+            float.TryParse(scaleText, NumberStyles.Float, CultureInfo.InvariantCulture, out var scale) && scale > 0f)
+        {
+            // `scale` is metres per tile; the shader wants tiles per metre.
+            mat.SetFloat("_Tiling", 1f / scale);
+        }
+        if (opts.TryGetValue("tint", out var tintText) &&
+            int.TryParse(tintText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tint))
+        {
+            mat.SetColor("_Tint", ColorFromInt(tint));
+        }
+        if (opts.TryGetValue("wear", out var wearText))
+        {
+            var v = ParseFloats(wearText);
+            if (v.HasValue) mat.SetVector("_WearParams", v.Value);
+        }
+        if (opts.TryGetValue("weather", out var weatherText))
+        {
+            var v = ParseFloats(weatherText);
+            // Only the cavity term is implemented; dust, streaks and splash are
+            // driven by world Y and belong with the weathering pass.
+            if (v.HasValue) mat.SetFloat("_Cavity", v.Value.w);
+        }
+        mat.SetFloat("_WorldSpace", 1f);
+
+        AssetDatabase.CreateAsset(mat, path);
+        return mat;
+    }
+
+    static Vector4? ParseFloats(string text)
+    {
+        var inner = text.Trim().TrimStart('[').TrimEnd(']');
+        if (inner.Length == 0) return null;
+        var bits = inner.Split(',');
+        if (bits.Length < 4) return null;
+        var f = new float[4];
+        for (int i = 0; i < 4; i++)
+        {
+            if (!float.TryParse(bits[i], NumberStyles.Float, CultureInfo.InvariantCulture, out f[i])) return null;
+        }
+        return new Vector4(f[0], f[1], f[2], f[3]);
+    }
+
     // ------------------------------------------------------ special mats --
 
     /// <summary>

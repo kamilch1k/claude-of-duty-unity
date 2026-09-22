@@ -20,17 +20,20 @@ public static class CodmModelBuilder
     const string ModelsRoot = "Assets/Art/Models";
     const string MaterialsRoot = "Assets/Art/Materials";
     const string PrefabsRoot = "Assets/Prefabs/Weapons";
+    const string WorldPrefabsRoot = "Assets/Prefabs/World";
 
     [Serializable]
     public class Manifest
     {
         public string format;
+        public string kind;
         public string id;
         public string label;
         public string fxClass;
         public int tris;
         public Part[] parts;
         public Node[] rootNodes;
+        public WorldSpecs specs;
         public int binBytes;
     }
 
@@ -134,6 +137,7 @@ public static class CodmModelBuilder
         }
 
         var root = new GameObject(manifest.id);
+        bool world = manifest.kind == "world";
         int missingMaterials = 0;
         foreach (var part in manifest.parts)
         {
@@ -161,6 +165,17 @@ public static class CodmModelBuilder
                 }
                 renderer.sharedMaterials = mats;
                 renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+
+                // Level geometry is what the player walks on and shoots at, so
+                // it needs collision. A mesh collider per material bucket is
+                // coarse — one bucket can be most of the street — but it is
+                // exact, which is what matters before anything is optimised.
+                if (world)
+                {
+                    go.isStatic = true;
+                    var collider = go.AddComponent<MeshCollider>();
+                    collider.sharedMesh = mesh;
+                }
             }
 
             foreach (var n in part.nodes ?? Array.Empty<Node>()) AddNode(go, n);
@@ -168,16 +183,54 @@ public static class CodmModelBuilder
 
         foreach (var n in manifest.rootNodes ?? Array.Empty<Node>()) AddNode(root, n);
 
-        ApplyDefaultLoadout(root.transform);
+        if (!world) ApplyDefaultLoadout(root.transform);
+        else ApplyWorldExtras(root, manifest);
 
-        PortPipeline.EnsureFolder(PrefabsRoot);
-        var prefabPath = $"{PrefabsRoot}/{manifest.id}.prefab";
+        PortPipeline.EnsureFolder(world ? WorldPrefabsRoot : PrefabsRoot);
+        var prefabPath = world
+            ? $"{WorldPrefabsRoot}/{manifest.id}.prefab"
+            : $"{PrefabsRoot}/{manifest.id}.prefab";
         PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
         UnityEngine.Object.DestroyImmediate(root);
 
         Debug.Log($"[port] {manifest.id}: {manifest.tris} tris, {manifest.parts.Length} parts -> {prefabPath}" +
                   (missingMaterials > 0 ? $" ({missingMaterials} missing materials)" : ""));
         return true;
+    }
+
+    /// <summary>
+    /// Spawn points ride in the world manifest's spec table; they become empties
+    /// in the prefab so the game code can find one by tag without a side lookup.
+    /// </summary>
+    static void ApplyWorldExtras(GameObject root, Manifest manifest)
+    {
+        var spawns = manifest.specs?.spawnPoints;
+        if (spawns == null || spawns.Length == 0) return;
+        var group = new GameObject("Spawns");
+        group.transform.SetParent(root.transform, false);
+        for (int i = 0; i < spawns.Length; i++)
+        {
+            var s = spawns[i];
+            var go = new GameObject($"spawn_{s.tag ?? "any"}_{i}");
+            go.transform.SetParent(group.transform, false);
+            if (s.position is { Length: >= 3 })
+                go.transform.localPosition = new Vector3(s.position[0], s.position[1], s.position[2]);
+            go.transform.localRotation = Quaternion.Euler(0f, s.yaw, 0f);
+        }
+    }
+
+    [Serializable]
+    public class WorldSpecs
+    {
+        public Spawn[] spawnPoints;
+    }
+
+    [Serializable]
+    public class Spawn
+    {
+        public float[] position;
+        public float yaw;
+        public string tag;
     }
 
     /// <summary>One mesh per part, one submesh per material bucket.</summary>
@@ -257,6 +310,9 @@ public static class CodmModelBuilder
         // The optic bore, lens and cavity blacks are built in code, not baked.
         var special = $"{MaterialsRoot}/special/{key}.mat";
         if (File.Exists(special)) return AssetDatabase.LoadAssetAtPath<Material>(special);
+        // World geometry arrives keyed by surface *plus* that building's tint,
+        // tile size and wear; those variants are built from the base surface.
+        if (key.Contains('|')) return PortPipeline.GetOrCreateVariant(key);
         return null;
     }
 

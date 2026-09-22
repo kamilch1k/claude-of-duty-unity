@@ -1,7 +1,9 @@
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.Rendering.Universal;
 using UnityEngine.SceneManagement;
 
 /// <summary>
@@ -50,9 +52,197 @@ public static class TestSceneBuilder
 
     public static void BuildAndRender()
     {
-        Build();
+        BuildStreet();
+        VerifyFiring();
         RenderFirstPerson();
         EditorApplication.Exit(0);
+    }
+
+    /// <summary>
+    /// The playable scene: the baked street, the player on a spawn point, the
+    /// rifle in hand, targets to shoot, and the two-camera viewmodel stack.
+    /// </summary>
+    [MenuItem("Claude of Duty/Build Street Scene")]
+    public static void BuildStreet()
+    {
+        PortPipeline.BuildMaterials();
+        PortPipeline.BuildSpecialMaterials();
+
+        var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Skybox;
+        RenderSettings.ambientIntensity = 1f;
+
+        var skyShader = Shader.Find("Skybox/Procedural");
+        if (skyShader != null)
+        {
+            var sky = new Material(skyShader);
+            sky.SetFloat("_SunSize", 0.04f);
+            sky.SetFloat("_AtmosphereThickness", 0.7f);
+            sky.SetFloat("_Exposure", 5.5f);
+            RenderSettings.skybox = sky;
+        }
+        DynamicGI.UpdateEnvironment();
+
+        var sun = new GameObject("Sun").AddComponent<Light>();
+        sun.type = LightType.Directional;
+        sun.intensity = 2.4f;
+        sun.color = new Color(1f, 0.91f, 0.77f);
+        sun.transform.rotation = Quaternion.Euler(42f, 146f, 0f);
+        sun.shadows = LightShadows.Soft;
+
+        var worldPrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/World/street.prefab");
+        if (worldPrefab == null)
+        {
+            Debug.LogError("[port] no street prefab — run the world bake and PortPipeline first");
+            return;
+        }
+        var world = (GameObject)PrefabUtility.InstantiatePrefab(worldPrefab);
+
+        // Stand where the level says a player stands.
+        var spawn = world.transform.Find("Spawns")?.GetComponentsInChildren<Transform>()
+            .FirstOrDefault(t => t.name.StartsWith("spawn_"));
+        var spawnPos = spawn ? spawn.position : new Vector3(0f, 0.5f, 0f);
+        var spawnYaw = spawn ? spawn.eulerAngles.y : 0f;
+
+        var player = new GameObject("Player");
+        player.transform.position = spawnPos + Vector3.up * 0.2f;
+        player.transform.rotation = Quaternion.Euler(0f, spawnYaw, 0f);
+        var cc = player.AddComponent<CharacterController>();
+        cc.height = PlayerTuning.PlayerHeight;
+        cc.radius = 0.34f;
+        cc.center = new Vector3(0f, PlayerTuning.PlayerHeight * 0.5f, 0f);
+        cc.slopeLimit = 50f;
+        cc.stepOffset = 0.42f;
+
+        // head (aim) -> pivot (recoil) -> camera + weapon
+        var head = new GameObject("Head");
+        head.transform.SetParent(player.transform, false);
+        head.transform.localPosition = new Vector3(0f, PlayerTuning.Stand.Eye, 0f);
+
+        var pivot = new GameObject("RecoilPivot");
+        pivot.transform.SetParent(head.transform, false);
+
+        var cam = head.AddComponent<Camera>();
+        cam.fieldOfView = WorldFov;
+        cam.nearClipPlane = 0.01f;
+        cam.farClipPlane = 500f;
+        cam.tag = "MainCamera";
+        cam.cullingMask = ~(1 << ViewmodelLayer);
+        head.AddComponent<AudioListener>();
+
+        var baseData = cam.GetUniversalAdditionalCameraData();
+        baseData.renderType = CameraRenderType.Base;
+
+        // The viewmodel pass, done the way URP wants it: an overlay camera on the
+        // base camera's stack. Two manual Camera.Render calls into one target do
+        // not composite — the second pass takes the colour buffer with it.
+        var vmGo = new GameObject("ViewmodelCamera");
+        vmGo.transform.SetParent(pivot.transform, false);
+        var vmCam = vmGo.AddComponent<Camera>();
+        vmCam.fieldOfView = ViewmodelFov;
+        vmCam.nearClipPlane = 0.01f;
+        vmCam.farClipPlane = 12f;
+        vmCam.clearFlags = CameraClearFlags.Depth;
+        vmCam.cullingMask = 1 << ViewmodelLayer;
+        var vmData = vmCam.GetUniversalAdditionalCameraData();
+        vmData.renderType = CameraRenderType.Overlay;
+        baseData.cameraStack.Add(vmCam);
+
+        var motor = player.AddComponent<PlayerMotor>();
+        motor.head = head.transform;
+
+        var weaponSystem = player.AddComponent<WeaponSystem>();
+        weaponSystem.viewCamera = cam;
+        weaponSystem.recoilPivot = pivot.transform;
+
+        var weaponPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(WeaponPrefab);
+        if (weaponPrefab != null)
+        {
+            var weapon = (GameObject)PrefabUtility.InstantiatePrefab(weaponPrefab);
+            weapon.transform.SetParent(pivot.transform, false);
+            weapon.transform.localPosition = WeaponHipPos;
+            weapon.transform.localRotation = Quaternion.Euler(WeaponHipRotDeg);
+            SetLayerRecursive(weapon, ViewmodelLayer);
+            foreach (var r in weapon.GetComponentsInChildren<Renderer>())
+                r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+            var muzzleNode = weapon.transform.Find("node_muzzle");
+            if (muzzleNode) weaponSystem.SetMuzzle(muzzleNode);
+        }
+
+        // A muzzle flash that exists so the shot is visible; the real one is a
+        // particle system upstream.
+        var flash = new GameObject("MuzzleFlash").AddComponent<Light>();
+        flash.transform.SetParent(weaponSystem.muzzle ? weaponSystem.muzzle : pivot.transform, false);
+        flash.type = LightType.Point;
+        flash.range = 6f;
+        flash.color = new Color(1f, 0.85f, 0.6f);
+        flash.enabled = false;
+        weaponSystem.muzzleFlash = flash;
+
+        // Targets, placed in front of the spawn and snapped to the ground.
+        var targetMat = AssetDatabase.LoadAssetAtPath<Material>("Assets/Art/Materials/library/fabric.mat");
+        for (int i = 0; i < 6; i++)
+        {
+            float z = 8f + i * 4f;
+            float x = (i % 3 - 1) * 3.5f;
+            var pos = spawnPos + Quaternion.Euler(0f, spawnYaw, 0f) * new Vector3(x, 0f, z);
+            if (Physics.Raycast(pos + Vector3.up * 6f, Vector3.down, out var ground, 40f))
+                pos = ground.point;
+            var t = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            t.name = $"Target{i}";
+            t.transform.position = pos + Vector3.up * 0.95f;
+            t.transform.localScale = new Vector3(0.55f, 0.95f, 0.55f);
+            if (targetMat) t.GetComponent<MeshRenderer>().sharedMaterial = targetMat;
+            t.AddComponent<Target>();
+        }
+
+        Physics.SyncTransforms();
+        Directory.CreateDirectory("Assets/Scenes");
+        EditorSceneManager.SaveScene(scene, StreetScenePath);
+        Debug.Log($"[port] street scene saved to {StreetScenePath} (spawn {spawnPos}, yaw {spawnYaw:0.0})");
+    }
+
+    const string StreetScenePath = "Assets/Scenes/Street.unity";
+
+    /// <summary>
+    /// Fire a burst without entering play mode and report what it hit.
+    ///
+    /// A scene that loads is not the same as a gun that works: this proves the
+    /// level has collision, that the ray reaches it, that a target takes damage
+    /// and dies, and that the recoil spring moves the pivot the way it should.
+    /// </summary>
+    public static void VerifyFiring()
+    {
+        var player = GameObject.Find("Player");
+        var weapon = player ? player.GetComponent<WeaponSystem>() : null;
+        var motor = player ? player.GetComponent<PlayerMotor>() : null;
+        var pivot = GameObject.Find("Player/Head/RecoilPivot");
+        if (weapon == null)
+        {
+            Debug.LogError("[port] no weapon system to verify");
+            return;
+        }
+
+        var cam = weapon.viewCamera;
+        if (cam)
+        {
+            bool hitSomething = Physics.Raycast(cam.transform.position, cam.transform.forward, out var probe, 300f);
+            Debug.Log($"[port] aim probe from {cam.transform.position}: " +
+                      (hitSomething ? $"hit {probe.collider.name} at {probe.point} ({probe.distance:0.0}m)" : "nothing within 300m"));
+        }
+
+        weapon.Prime();
+        int fired = 0;
+        int hitsBefore = weapon.Hits;
+        // Synthetic clock: 12 rounds a tenth of a second apart, so the rate of
+        // fire is exercised rather than bypassed.
+        for (int i = 0; i < 12; i++) if (weapon.Fire(1f + i * 0.1f)) fired++;
+        float pitch = pivot ? pivot.transform.localEulerAngles.x : 0f;
+        var dead = Object.FindObjectsByType<Target>(FindObjectsSortMode.None).Count(t => t.Dead);
+        Debug.Log($"[port] burst: fired={fired} ammo={weapon.Ammo}/{weapon.magSize} hits={weapon.Hits - hitsBefore} " +
+                  $"recoilPivotPitch={pitch:0.00} targetsDead={dead}");
+        _ = hitsBefore;
     }
 
     public static void Build()
