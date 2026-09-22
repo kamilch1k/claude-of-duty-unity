@@ -1,6 +1,86 @@
 using UnityEngine;
 
 /// <summary>
+/// The effects the port has so far: tracers, a muzzle flash quad and impact
+/// decals. Upstream these are GPU particles, decal buffers and a pooled tracer
+/// system; this is the cheap version, and it exists so that firing is legible.
+/// </summary>
+public static class Fx
+{
+    static Material _tracerMat;
+    static Material _decalMat;
+    static Material _sparkMat;
+    static Transform _root;
+
+    static void Ensure()
+    {
+        if (_root != null) return;
+        var go = new GameObject("FX");
+        _root = go.transform;
+
+        var lit = Shader.Find("Universal Render Pipeline/Unlit");
+        _tracerMat = new Material(lit) { color = new Color(1f, 0.85f, 0.55f, 0.85f) };
+        _sparkMat = new Material(lit) { color = new Color(1f, 0.75f, 0.4f, 0.9f) };
+        _decalMat = new Material(lit) { color = new Color(0.04f, 0.035f, 0.03f, 1f) };
+    }
+
+    /// <summary>Destroy now in the editor: Object.Destroy is a no-op there.</summary>
+    static void Kill(GameObject go, float delay)
+    {
+        if (Application.isPlaying) Object.Destroy(go, delay);
+        else Object.DestroyImmediate(go);
+    }
+
+    /// <summary>A tracer from muzzle to impact, alive for two frames.</summary>
+    public static void Tracer(Vector3 from, Vector3 to)
+    {
+        Ensure();
+        var go = new GameObject("tracer");
+        go.transform.SetParent(_root, false);
+        var line = go.AddComponent<LineRenderer>();
+        line.material = _tracerMat;
+        line.startWidth = 0.012f;
+        line.endWidth = 0.006f;
+        line.useWorldSpace = true;
+        line.positionCount = 2;
+        line.SetPosition(0, from);
+        line.SetPosition(1, to);
+        Kill(go, 0.035f);
+    }
+
+    public static void Flash(Vector3 at, Vector3 direction)
+    {
+        Ensure();
+        var go = new GameObject("flash");
+        go.transform.SetParent(_root, false);
+        go.transform.position = at;
+        go.transform.rotation = Quaternion.LookRotation(direction);
+        var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        quad.transform.SetParent(go.transform, false);
+        quad.transform.localScale = new Vector3(0.12f, 0.12f, 1f);
+        Object.Destroy(quad.GetComponent<Collider>());
+        quad.GetComponent<MeshRenderer>().sharedMaterial = _sparkMat;
+        Kill(go, 0.03f);
+    }
+
+    /// <summary>An impact: a spark flash, and a decal when it lands on geometry.</summary>
+    public static void Impact(Vector3 point, Vector3 normal, bool decal)
+    {
+        Ensure();
+        var go = new GameObject("impact");
+        go.transform.SetParent(_root, false);
+        go.transform.position = point + normal * 0.01f;
+        go.transform.rotation = Quaternion.LookRotation(-normal);
+        var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        quad.transform.SetParent(go.transform, false);
+        quad.transform.localScale = decal ? Vector3.one * 0.09f : Vector3.one * 0.05f;
+        Object.Destroy(quad.GetComponent<Collider>());
+        quad.GetComponent<MeshRenderer>().sharedMaterial = decal ? _decalMat : _sparkMat;
+        Kill(go, decal ? 25f : 0.06f);
+    }
+}
+
+/// <summary>
 /// An enemy that hunts the player, shoots back, and dies.
 ///
 /// It is a mannequin in bind pose, not an animated soldier: the bake carries the

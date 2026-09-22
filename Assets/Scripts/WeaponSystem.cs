@@ -44,6 +44,95 @@ public class WeaponSystem : MonoBehaviour
     public int ShotsFired { get; private set; }
     public int Hits { get; private set; }
 
+    /// <summary>
+    /// Rounds in flight. Upstream simulates with travel time and drop rather than
+    /// hitscanning, and at 880 m/s over the street's 60 m that is a tenth of a
+    /// second to impact with ~11 cm of drop — small, but it is the difference
+    /// between a rifle that hits where it is pointed and one that feels like it
+    /// reaches out and touches things.
+    /// </summary>
+    struct Shot
+    {
+        public Vector3 position;
+        public Vector3 velocity;
+        public float born;
+        public bool live;
+        public int bounces;
+    }
+
+    const int MaxShots = 64;
+    readonly Shot[] _shots = new Shot[MaxShots];
+    public float gravity = -PlayerTuning.Gravity;
+
+    void StepShots() => StepShots(Time.deltaTime);
+
+    /// <summary>
+    /// Advance the rounds in flight. Public and time-stepped so a burst can be
+    /// verified without play mode — the travel time is part of what is checked.
+    /// </summary>
+    public void StepFor(float seconds, float step = 0.004f)
+    {
+        for (float t = 0f; t < seconds; t += step) StepShots(step);
+    }
+
+    void StepShots(float dt)
+    {
+        for (int i = 0; i < MaxShots; i++)
+        {
+            if (!_shots[i].live) continue;
+            var shot = _shots[i];
+            var next = shot.position + shot.velocity * dt;
+            shot.velocity += Vector3.up * gravity * dt;
+
+            if (Physics.Linecast(shot.position, next, out var hit, ~0, QueryTriggerInteraction.Ignore))
+            {
+                Fx.Tracer(shot.position, hit.point);
+                ResolveHit(hit, shot.velocity);
+                shot.live = false;
+            }
+            else
+            {
+                Fx.Tracer(shot.position, next);
+                shot.position = next;
+            }
+            if (Time.time - shot.born > 2f) shot.live = false;
+            _shots[i] = shot;
+        }
+    }
+
+    void SpawnShot(Vector3 origin, Vector3 direction)
+    {
+        for (int i = 0; i < MaxShots; i++)
+        {
+            if (_shots[i].live) continue;
+            _shots[i] = new Shot
+            {
+                position = origin,
+                velocity = direction * muzzleVelocity,
+                born = Time.time,
+                live = true,
+            };
+            Fx.Flash(origin, direction);
+            return;
+        }
+    }
+
+    void ResolveHit(RaycastHit hit, Vector3 incoming)
+    {
+        _ = incoming;
+        var enemy = hit.collider.GetComponentInParent<Enemy>();
+        var target = hit.collider.GetComponentInParent<Target>();
+        if (enemy != null || target != null)
+        {
+            if (enemy != null) enemy.TakeDamage(damage, hit.point, hit.normal * -1f);
+            else target.TakeDamage(damage, hit.point, hit.normal * -1f);
+            Hits++;
+            if (hitClip) AudioSource.PlayClipAtPoint(hitClip, hit.point, 0.8f);
+            if (hud) hud.FlashHit();
+        }
+        Fx.Impact(hit.point, hit.normal, target == null && enemy == null);
+    }
+
     float _nextShot;
     float _reloadEnds;
     float _adsBlend;
@@ -68,7 +157,7 @@ public class WeaponSystem : MonoBehaviour
         if (muzzleFlash) muzzleFlash.enabled = false;
     }
 
-    void Update()
+    void UpdateWeapon()
     {
         Ads = Input.GetMouseButton(1);
         _adsBlend = Mathf.Lerp(_adsBlend, Ads ? 1f : 0f, 1f - Mathf.Exp(-Time.deltaTime / adsTime));
@@ -131,33 +220,17 @@ public class WeaponSystem : MonoBehaviour
         Vector2 offset = Random.insideUnitCircle * _spread;
         Vector3 dir = cam.transform.rotation * new Vector3(offset.x, offset.y, 1f).normalized;
 
-        Vector3 origin = cam.transform.position;
-        if (Physics.Raycast(origin, dir, out var hit, 300f, ~0, QueryTriggerInteraction.Ignore))
-        {
-            var target = hit.collider.GetComponentInParent<Target>();
-            var enemy = hit.collider.GetComponentInParent<Enemy>();
-            if (enemy != null)
-            {
-                enemy.TakeDamage(damage, hit.point, dir);
-                Hits++;
-                if (hitClip) AudioSource.PlayClipAtPoint(hitClip, hit.point, 0.8f);
-                if (hud) hud.FlashHit();
-            }
-            else if (target != null)
-            {
-                target.TakeDamage(damage, hit.point, dir);
-                Hits++;
-                if (hitClip) AudioSource.PlayClipAtPoint(hitClip, hit.point, 0.8f);
-                if (hud) hud.FlashHit();
-            }
-            else
-            {
-                // Level geometry: the impact point is where a decal would go.
-                Debug.DrawLine(hit.point, hit.point + hit.normal * 0.2f, Color.yellow, 2f);
-            }
-            return true;
-        }
-        return false;
+        // From the muzzle when there is one, so the tracer starts where the
+        // flash is; the direction is still the camera's.
+        Vector3 origin = muzzle ? muzzle.position : cam.transform.position;
+        SpawnShot(origin, dir);
+        return true;
+    }
+
+    void Update()
+    {
+        UpdateWeapon();
+        StepShots();
     }
 
     void TickRecoil()

@@ -314,6 +314,9 @@ public static class TestSceneBuilder
         // Synthetic clock: 12 rounds a tenth of a second apart, so the rate of
         // fire is exercised rather than bypassed.
         for (int i = 0; i < 12; i++) if (weapon.Fire(1f + i * 0.1f)) fired++;
+        // Then let the rounds travel: at 880 m/s they need ~30 ms to cross the
+        // 12 m to the nearest target, and the drop over that is millimetres.
+        weapon.StepFor(0.5f);
         float pitch = pivot ? pivot.transform.localEulerAngles.x : 0f;
         var dead = Object.FindObjectsByType<Target>(FindObjectsSortMode.None).Count(t => t.Dead);
         Debug.Log($"[port] burst: fired={fired} ammo={weapon.Ammo}/{weapon.magSize} hits={weapon.Hits - hitsBefore} " +
