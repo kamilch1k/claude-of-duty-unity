@@ -85,27 +85,24 @@ public static class PortPreview
         {
             var sky = new Material(skyShader);
             sky.SetFloat("_SunSize", 0.04f);
-            sky.SetFloat("_AtmosphereThickness", 1.0f);
+            sky.SetFloat("_AtmosphereThickness", 0.7f);
             sky.SetColor("_SkyTint", new Color(0.42f, 0.52f, 0.68f));
             sky.SetColor("_GroundColor", new Color(0.22f, 0.20f, 0.18f));
-            sky.SetFloat("_Exposure", 1.1f);
+            // A daylight sky is orders of magnitude brighter than a preview
+            // skybox at exposure 1. The browser reflects a PMREM of a real
+            // atmosphere, and the weapon's broad specular comes from it — at 1.1
+            // the gun reads as a silhouette for want of environment radiance, not
+            // for want of albedo.
+            sky.SetFloat("_Exposure", 5.5f);
             RenderSettings.skybox = sky;
             DynamicGI.UpdateEnvironment();
         }
 
-        // The viewmodel rig, not scene lighting.
-        //
-        // Upstream measures that its weapon rig delivers ~20x the irradiance per
-        // unit albedo that the world does, and every weapon albedo is authored a
-        // third of physical to compensate (see the honest assessment in the
-        // README and the exposure note in weapons/materials.js). Lit like world
-        // geometry, a 0.01-albedo receiver is black — which is the correct
-        // result, and exactly why the port needs this rig rather than brighter
-        // materials.
-        AddLight("key", 18f, 38f, 146f);
-        AddLight("fill", 12f, 12f, -40f);
-        AddLight("rim", 8f, -22f, 62f);
-        AddLight("bounce", 6f, -8f, 200f);
+        // One soft key for the *world*, nothing more: the weapon's own rig is in
+        // the shader (_ViewRig), so this render is lit the way the game will be
+        // rather than by a preview-only light rig that could hide a real problem.
+        AddLight("key", 2.4f, 38f, 146f);
+        AddLight("fill", 0.7f, 12f, -40f);
 
         var bounds = new Bounds();
         bool any = false;

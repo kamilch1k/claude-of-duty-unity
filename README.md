@@ -12,13 +12,14 @@ generators in Chromium and writes real assets this project imports.
 |---|---|
 | Texture bake — 19 world surfaces + 15 weapon variants | **done**, 34 sets, 5 maps each |
 | Weapon mesh bake — rifle, SMG, pistol, every attachment variant | **done** |
+| Audio bake — weapons, foley, UI, ambience, barks, reverb IRs | **done**, 114 files |
 | Triplanar URP shader (vertex masks, roughness remap, env specular, alpha clip) | **done** |
+| Viewmodel light rig (key/fill/rim/bounce + hemisphere, view-space) | **done**, in the shader |
 | Material + prefab build from the bakes | **done**, verified by in-editor render |
-| Viewmodel light rig | **not started** — weapons render dark without it |
+| Player movement tuning | data ported, controller not written |
 | World geometry (market street, buildings, interiors, props) | not started |
 | Skinned soldiers + animation clips | not started |
-| Audio (weapon fire, foley, reverb IRs) | not started |
-| Gameplay port (movement tuning, weapon defs, ballistics, AI) | not started |
+| Weapon definitions, ballistics, AI | not started |
 
 ## Opening it
 
@@ -47,8 +48,9 @@ cd ../claude-of-duty-optimized
 npm install
 npx playwright install chromium
 
-node tools/bake/bake-textures.mjs   # 34 sets -> ../claude-of-duty-unity/Assets/Art/Textures
+node tools/bake/bake-textures.mjs   # 34 sets  -> ../claude-of-duty-unity/Assets/Art/Textures
 node tools/bake/bake-meshes.mjs     # 3 weapons -> ../claude-of-duty-unity/Assets/Art/Models
+node tools/bake/bake-audio.mjs      # 114 wavs  -> ../claude-of-duty-unity/Assets/Art/Audio
 ```
 
 Both scripts take `--out=<dir>` to write somewhere else, `--only=a,b` to bake a
@@ -83,13 +85,22 @@ inverted the way `MaterialSystem.tune` inverts it, `_Tint` is linearised the way
 
 ## Known debt
 
-**The weapon is dark, and that is upstream's own finding, not a bake bug.** The
-source README records that its viewmodel light rig "delivers roughly 20× the
-irradiance per unit albedo that the world does", and that every weapon albedo is
-"cheated to a third of physical to compensate". A receiver's albedo here is
-≈0.003 linear after tint, so lit like world geometry it is correctly black. The
-port needs that rig — a dedicated weapon light setup plus the 0.24 environment
-intensity already wired into `_EnvIntensity`.
+**The weapon renders dark in the preview, and it is environment radiance, not
+albedo.** The viewmodel rig is ported — key 2.0 warm upper-front-left, cool fill
+0.6, rim 1.0, warm bounce 0.5 from below, and a 0.35 hemisphere, all fixed in
+view space exactly as `render/index.js` sets them — and it visibly catches the
+rail, magazine and receiver edges. What the preview does not have is the
+browser's environment: upstream reflects a PMREM of a real atmosphere, and the
+README there records that its viewmodel rig delivers roughly 20× the irradiance
+per unit albedo that the world does, with every weapon albedo authored a third
+of physical to compensate. A receiver here is ≈0.003 linear after tint, so the
+broad specular term is doing most of the work and a stand-in skybox at exposure
+5.5 only approximates it. When the sky and time-of-day are ported this should be
+re-measured rather than tuned around.
+
+**Audio is baked dry.** One-shots carry no reverb send, because Unity
+spatialises and reverbs them itself. The five impulses (`ir_tight` … `ir_open`)
+are there for Unity's reverb to convolve with, but nothing wires them up yet.
 
 ## Attribution
 

@@ -51,6 +51,20 @@ Shader "ClaudeOfDuty/TriplanarLit"
         [Toggle] _WorldSpace ("Project in world space", Float) = 0
         [Toggle(_ALPHATEST_ON)] _AlphaTest ("Alpha clip", Float) = 0
         _Cutoff ("Alpha cutoff", Range(0,1)) = 0.5
+
+        // ---- viewmodel rig -------------------------------------------------
+        // The weapon is lit by a 4-light rig fixed in VIEW space plus a
+        // hemisphere, ported from render/index.js. It lives in the shader rather
+        // than in the scene because it is a constant of the camera, and because
+        // four extra scene lights would wash out the world they are not meant to
+        // touch. Weapon materials set _ViewRig to 1; world materials leave it 0.
+        _ViewRig ("Viewmodel rig", Range(0,1)) = 0
+        _RigKey ("Key rgb + intensity", Color) = (1,0.807,0.552,2)
+        _RigFill ("Fill rgb + intensity", Color) = (0.342,0.552,1,0.6)
+        _RigRim ("Rim rgb + intensity", Color) = (1,0.680,0.392,1)
+        _RigBounce ("Bounce rgb + intensity", Color) = (1,0.479,0.195,0.5)
+        _RigHemi ("Hemi sky rgb + intensity", Color) = (0.275,0.468,1,0.35)
+        _RigHemiGround ("Hemi ground", Color) = (0.037,0.030,0.023,1)
     }
 
     SubShader
@@ -91,6 +105,13 @@ Shader "ClaudeOfDuty/TriplanarLit"
             half   _Cavity;
             half   _WorldSpace;
             half   _Cutoff;
+            half   _ViewRig;
+            half4  _RigKey;
+            half4  _RigFill;
+            half4  _RigRim;
+            half4  _RigBounce;
+            half4  _RigHemi;
+            half4  _RigHemiGround;
         CBUFFER_END
 
         struct CodSurface
@@ -182,8 +203,35 @@ Shader "ClaudeOfDuty/TriplanarLit"
             return s;
         }
 
-        /** Cook-Torrance GGX, single main light. */
-        half3 DirectBRDF(CodSurface s, Light light, half3 viewDirWS, half3 normalWS)
+        /**
+         * A rig light, given the direction it arrives FROM in view space.
+         *
+         * The constants below are the upstream view-space vectors with Z negated:
+         * three's view space looks down -Z and Unity's down +Z, so porting the
+         * numbers verbatim would light the gun from the wrong side.
+         */
+        Light RigLight(float3 arriveFromView, half4 colourIntensity)
+        {
+            Light l = (Light)0;
+            float3 arriveFrom = normalize(mul((float3x3)UNITY_MATRIX_I_V, arriveFromView));
+            l.direction = -arriveFrom;
+            l.color = colourIntensity.rgb * colourIntensity.a;
+            l.distanceAttenuation = 1.0h;
+            // The rig casts no shadows upstream; a gun shadowing itself would
+            // put the support glove under the handguard into full dark.
+            l.shadowAttenuation = 1.0h;
+            l.layerMask = 0xFFFFFFFF;
+            return l;
+        }
+
+        /** Hemisphere irradiance: sky above, warm street bounce below. */
+        half3 RigHemisphere(half3 n)
+        {
+            half up = 0.5h + 0.5h * n.y;
+            return _RigHemi.rgb * _RigHemi.a * up + _RigHemiGround.rgb * (1.0h - up);
+        }
+
+        /** Cook-Torrance GGX, single main light. */        half3 DirectBRDF(CodSurface s, Light light, half3 viewDirWS, half3 normalWS)
         {
             half3 l = light.direction;
             half3 h = normalize(l + viewDirWS);
@@ -283,6 +331,20 @@ Shader "ClaudeOfDuty/TriplanarLit"
                 Light main = GetMainLight(shadowCoord);
 
                 half3 colour = DirectBRDF(s, main, viewDirWS, shadingNormal);
+
+                // Viewmodel rig: key upper-front-left, cool fill lower-front-right,
+                // rim from behind to catch the rail and optic edges, warm bounce
+                // from below so the support glove does not read blue in the
+                // handguard's own shadow.
+                if (_ViewRig > 0.5h)
+                {
+                    colour += DirectBRDF(s, RigLight(float3(-0.45h, 0.75h, -0.55h), _RigKey), viewDirWS, shadingNormal);
+                    colour += DirectBRDF(s, RigLight(float3(0.60h, -0.15h, -0.50h), _RigFill), viewDirWS, shadingNormal);
+                    colour += DirectBRDF(s, RigLight(float3(0.20h, 0.35h, 0.90h), _RigRim), viewDirWS, shadingNormal);
+                    colour += DirectBRDF(s, RigLight(float3(-0.20h, -0.86h, -0.47h), _RigBounce), viewDirWS, shadingNormal);
+                    colour += RigHemisphere(shadingNormal) * s.albedo * s.ao;
+                }
+
                 colour += SampleSH(shadingNormal) * s.albedo * s.ao * _Ambient;
 
                 // Environment specular. Without this a 0.01-albedo receiver lit

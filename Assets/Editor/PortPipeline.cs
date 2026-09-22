@@ -169,6 +169,20 @@ public static class PortPipeline
         mat.SetFloat("_Ambient", 1f);
         // ENV_OCCLUSION: a shouldered weapon sees about a quarter of the sky.
         mat.SetFloat("_EnvIntensity", kind == "weapon" ? 0.24f : 1f);
+
+        // The viewmodel rig, ported from render/index.js: a 4-light view-space
+        // rig plus a hemisphere, applied only to weapon surfaces. A shouldered
+        // weapon is lit by its own rig in every shipped FPS, and for good reason
+        // — handed one copy of the world sun, a 0.01-albedo receiver goes to a
+        // black silhouette whenever the sun is behind it.
+        bool weapon = kind == "weapon";
+        mat.SetFloat("_ViewRig", weapon ? 1f : 0f);
+        mat.SetColor("_RigKey", new Color(1.0000f, 0.8069f, 0.5520f, 2.0f));
+        mat.SetColor("_RigFill", new Color(0.3419f, 0.5520f, 1.0000f, 0.6f));
+        mat.SetColor("_RigRim", new Color(1.0000f, 0.6795f, 0.3916f, 1.0f));
+        mat.SetColor("_RigBounce", new Color(1.0000f, 0.4793f, 0.1946f, 0.5f));
+        mat.SetColor("_RigHemi", new Color(0.2747f, 0.4678f, 1.0000f, 0.35f));
+        mat.SetColor("_RigHemiGround", new Color(0.0369f, 0.0296f, 0.0231f, 1f));
         mat.SetFloat("_NormalScale", p?.normalStrength ?? 1f);
         mat.SetFloat("_Occlusion", p?.aoStrength ?? 1f);
 
