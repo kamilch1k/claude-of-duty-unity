@@ -21,6 +21,7 @@ public static class CodmModelBuilder
     const string MaterialsRoot = "Assets/Art/Materials";
     const string PrefabsRoot = "Assets/Prefabs/Weapons";
     const string WorldPrefabsRoot = "Assets/Prefabs/World";
+    const string SoldierPrefabsRoot = "Assets/Prefabs/Soldiers";
 
     [Serializable]
     public class Manifest
@@ -186,10 +187,10 @@ public static class CodmModelBuilder
         if (!world) ApplyDefaultLoadout(root.transform);
         else ApplyWorldExtras(root, manifest);
 
-        PortPipeline.EnsureFolder(world ? WorldPrefabsRoot : PrefabsRoot);
-        var prefabPath = world
-            ? $"{WorldPrefabsRoot}/{manifest.id}.prefab"
-            : $"{PrefabsRoot}/{manifest.id}.prefab";
+        var isSoldier = manifest.kind == "soldier";
+        var root_ = isSoldier ? SoldierPrefabsRoot : world ? WorldPrefabsRoot : PrefabsRoot;
+        PortPipeline.EnsureFolder(root_);
+        var prefabPath = $"{root_}/{manifest.id}.prefab";
         PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
         UnityEngine.Object.DestroyImmediate(root);
 

@@ -197,10 +197,86 @@ public static class TestSceneBuilder
             t.AddComponent<Target>();
         }
 
+        // Enemies: one per spawn point, so they start where the level intends.
+        var enemies = new System.Collections.Generic.List<Enemy>();
+        var soldierPaths = new[]
+        {
+            "Assets/Prefabs/Soldiers/vanguard.prefab",
+            "Assets/Prefabs/Soldiers/irregular.prefab",
+            "Assets/Prefabs/Soldiers/breacher.prefab",
+        };
+        var allSpawns = world.transform.Find("Spawns")?.GetComponentsInChildren<Transform>() ?? new Transform[0];
+        int index = 0;
+        foreach (var node in allSpawns)
+        {
+            if (!node.name.StartsWith("spawn_")) continue;
+            var prefabPath = soldierPaths[index % soldierPaths.Length];
+            var soldierPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+            if (soldierPrefab == null) { Debug.LogWarning($"[port] missing {prefabPath}"); break; }
+
+            // Keep the player's own spawn for the player.
+            if (Vector3.Distance(node.position, spawnPos) < 1.5f) continue;
+
+            var soldier = (GameObject)PrefabUtility.InstantiatePrefab(soldierPrefab);
+            soldier.name = $"Enemy{index}";
+            soldier.transform.position = node.position;
+            soldier.transform.rotation = Quaternion.Euler(0f, node.eulerAngles.y + 180f, 0f);
+
+            var ccE = soldier.AddComponent<CharacterController>();
+            ccE.height = PlayerTuning.PlayerHeight;
+            ccE.radius = 0.34f;
+            ccE.center = new Vector3(0f, PlayerTuning.PlayerHeight * 0.5f, 0f);
+            ccE.stepOffset = 0.42f;
+
+            var eye = new GameObject("Eye");
+            eye.transform.SetParent(soldier.transform, false);
+            eye.transform.localPosition = new Vector3(0f, 1.66f, 0f);
+            var muzzle = new GameObject("Muzzle");
+            muzzle.transform.SetParent(soldier.transform, false);
+            muzzle.transform.localPosition = new Vector3(0.12f, 1.35f, 0.35f);
+
+            var flashE = new GameObject("EnemyFlash").AddComponent<Light>();
+            flashE.transform.SetParent(muzzle.transform, false);
+            flashE.type = LightType.Point;
+            flashE.range = 5f;
+            flashE.enabled = false;
+
+            var enemy = soldier.AddComponent<Enemy>();
+            enemy.eye = eye.transform;
+            enemy.muzzle = muzzle.transform;
+            enemy.muzzleFlash = flashE;
+            enemy.fireClip = LoadClip("weapon_rifle_3p");
+            enemy.deathClip = LoadClip("bodyfall");
+            enemies.Add(enemy);
+            index++;
+        }
+
+        var health = player.AddComponent<PlayerHealth>();
+        health.hurtClip = LoadClip("impact_flesh");
+        health.deathClip = LoadClip("ui_lowhealth");
+
+        weaponSystem.fireClip = LoadClip("weapon_rifle_1p");
+        weaponSystem.reloadClip = LoadClip("reload_start");
+        weaponSystem.hitClip = LoadClip("ui_hitmarker");
+
+        var hud = player.AddComponent<Hud>();
+        hud.weapon = weaponSystem;
+        hud.health = health;
+        hud.enemies = enemies.ToArray();
+        weaponSystem.hud = hud;
+
         Physics.SyncTransforms();
         Directory.CreateDirectory("Assets/Scenes");
         EditorSceneManager.SaveScene(scene, StreetScenePath);
-        Debug.Log($"[port] street scene saved to {StreetScenePath} (spawn {spawnPos}, yaw {spawnYaw:0.0})");
+        Debug.Log($"[port] street scene saved to {StreetScenePath} (spawn {spawnPos}, yaw {spawnYaw:0.0}, {enemies.Count} enemies)");
+    }
+
+    static AudioClip LoadClip(string name)
+    {
+        var path = $"Assets/Art/Audio/{name}.wav";
+        var clip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
+        if (clip == null) Debug.LogWarning($"[port] no audio clip at {path}");
+        return clip;
     }
 
     const string StreetScenePath = "Assets/Scenes/Street.unity";

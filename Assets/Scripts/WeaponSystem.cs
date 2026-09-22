@@ -31,6 +31,12 @@ public class WeaponSystem : MonoBehaviour
     public Transform recoilPivot;
     public Transform muzzle;
     public Light muzzleFlash;
+    public Hud hud;
+
+    [Header("Audio (baked from the game's own synth)")]
+    public AudioClip fireClip;
+    public AudioClip reloadClip;
+    public AudioClip hitClip;
 
     public int Ammo { get; private set; }
     public bool Reloading { get; private set; }
@@ -77,6 +83,7 @@ public class WeaponSystem : MonoBehaviour
         {
             Reloading = true;
             _reloadEnds = Time.time + (Ammo == 0 ? reloadEmpty : reloadTac);
+            if (reloadClip) AudioSource.PlayClipAtPoint(reloadClip, transform.position, 0.6f);
         }
 
         if (Input.GetMouseButton(0) && Time.time >= _nextShot && !Reloading)
@@ -109,6 +116,7 @@ public class WeaponSystem : MonoBehaviour
             muzzleFlash.enabled = true;
             muzzleFlash.intensity = 6f;
         }
+        if (fireClip) AudioSource.PlayClipAtPoint(fireClip, transform.position, 0.9f);
 
         // Recoil is a spring, not a step: the pattern climbs, then drifts, and
         // the residual share is what keeps the sight picture from snapping back.
@@ -127,10 +135,20 @@ public class WeaponSystem : MonoBehaviour
         if (Physics.Raycast(origin, dir, out var hit, 300f, ~0, QueryTriggerInteraction.Ignore))
         {
             var target = hit.collider.GetComponentInParent<Target>();
-            if (target != null)
+            var enemy = hit.collider.GetComponentInParent<Enemy>();
+            if (enemy != null)
+            {
+                enemy.TakeDamage(damage, hit.point, dir);
+                Hits++;
+                if (hitClip) AudioSource.PlayClipAtPoint(hitClip, hit.point, 0.8f);
+                if (hud) hud.FlashHit();
+            }
+            else if (target != null)
             {
                 target.TakeDamage(damage, hit.point, dir);
                 Hits++;
+                if (hitClip) AudioSource.PlayClipAtPoint(hitClip, hit.point, 0.8f);
+                if (hud) hud.FlashHit();
             }
             else
             {
