@@ -1,6 +1,53 @@
 using UnityEngine;
 
 /// <summary>
+/// Pooled one-shot audio.
+///
+/// AudioSource.PlayClipAtPoint looks harmless and is not: it creates a GameObject
+/// and an AudioSource per call and destroys them a clip later. At 800 rpm with
+/// impacts and hit markers that is dozens of allocations and destructions a
+/// second, which is how a firefight turns into a stutter.
+/// </summary>
+public static class Sfx
+{
+    const int Voices = 24;
+    static readonly AudioSource[] _pool = new AudioSource[Voices];
+    static int _next;
+
+    public static void Play(AudioClip clip, Vector3 at, float volume = 1f)
+    {
+        if (clip == null) return;
+        if (_pool[_next] == null)
+        {
+            var go = new GameObject("sfx");
+            go.transform.SetParent(Root, false);
+            var src = go.AddComponent<AudioSource>();
+            src.playOnAwake = false;
+            src.spatialBlend = 1f;
+            src.rolloffMode = AudioRolloffMode.Linear;
+            src.maxDistance = 80f;
+            _pool[_next] = src;
+        }
+        var voice = _pool[_next];
+        _next = (_next + 1) % Voices;
+        voice.transform.position = at;
+        voice.volume = Mathf.Clamp01(volume);
+        voice.clip = clip;
+        voice.Play();
+    }
+
+    static Transform _root;
+    static Transform Root
+    {
+        get
+        {
+            if (_root == null) _root = new GameObject("SfxPool").transform;
+            return _root;
+        }
+    }
+}
+
+/// <summary>
 /// The effects the port has so far: tracers, a muzzle flash quad and impact
 /// decals. Upstream these are GPU particles, decal buffers and a pooled tracer
 /// system; this is the cheap version, and it exists so that firing is legible.
@@ -12,71 +59,84 @@ public static class Fx
     static Material _sparkMat;
     static Transform _root;
 
+    /// <summary>
+    /// Pooled quads for flashes, impacts and decals.
+    ///
+    /// The first version created a primitive per effect — CreatePrimitive builds a
+    /// GameObject, a mesh filter, a renderer and a collider it then throws away.
+    /// Firing 13 rounds a second made that visible.
+    /// </summary>
+    struct Pooled
+    {
+        public GameObject go;
+        public MeshRenderer renderer;
+        public float freeAt;
+    }
+
+    static readonly Pooled[] _pool = new Pooled[64];
+    static int _next;
+
     static void Ensure()
     {
         if (_root != null) return;
-        var go = new GameObject("FX");
-        _root = go.transform;
-
+        _root = new GameObject("FX").transform;
         var lit = Shader.Find("Universal Render Pipeline/Unlit");
         _tracerMat = new Material(lit) { color = new Color(1f, 0.85f, 0.55f, 0.85f) };
         _sparkMat = new Material(lit) { color = new Color(1f, 0.75f, 0.4f, 0.9f) };
         _decalMat = new Material(lit) { color = new Color(0.04f, 0.035f, 0.03f, 1f) };
     }
 
-    /// <summary>Destroy now in the editor: Object.Destroy is a no-op there.</summary>
-    static void Kill(GameObject go, float delay)
+    static void Place(Vector3 at, Quaternion rot, float scale, Material mat, float life)
     {
-        if (Application.isPlaying) Object.Destroy(go, delay);
-        else Object.DestroyImmediate(go);
+        Ensure();
+        // Reuse the oldest slot rather than allocating; a firefight should not
+        // grow the scene.
+        var slot = _pool[_next];
+        if (slot.go == null)
+        {
+            slot.go = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            Object.Destroy(slot.go.GetComponent<Collider>());
+            slot.go.transform.SetParent(_root, false);
+            slot.renderer = slot.go.GetComponent<MeshRenderer>();
+            slot.renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        }
+        _next = (_next + 1) % _pool.Length;
+        slot.go.transform.SetPositionAndRotation(at, rot);
+        slot.go.transform.localScale = Vector3.one * scale;
+        slot.renderer.sharedMaterial = mat;
+        slot.go.SetActive(true);
+        slot.freeAt = Time.time + life;
+        _pool[(_next + _pool.Length - 1) % _pool.Length] = slot;
+        Prune();
+    }
+
+    static void Prune()
+    {
+        for (int i = 0; i < _pool.Length; i++)
+        {
+            if (_pool[i].go != null && _pool[i].go.activeSelf && Time.time > _pool[i].freeAt)
+                _pool[i].go.SetActive(false);
+        }
     }
 
     /// <summary>A tracer from muzzle to impact, alive for two frames.</summary>
     public static void Tracer(Vector3 from, Vector3 to)
     {
-        Ensure();
-        var go = new GameObject("tracer");
-        go.transform.SetParent(_root, false);
-        var line = go.AddComponent<LineRenderer>();
-        line.material = _tracerMat;
-        line.startWidth = 0.012f;
-        line.endWidth = 0.006f;
-        line.useWorldSpace = true;
-        line.positionCount = 2;
-        line.SetPosition(0, from);
-        line.SetPosition(1, to);
-        Kill(go, 0.035f);
+        Place((from + to) * 0.5f, Quaternion.LookRotation(to - from), 1f, _tracerMat, 0.035f);
     }
 
     public static void Flash(Vector3 at, Vector3 direction)
     {
         Ensure();
-        var go = new GameObject("flash");
-        go.transform.SetParent(_root, false);
-        go.transform.position = at;
-        go.transform.rotation = Quaternion.LookRotation(direction);
-        var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
-        quad.transform.SetParent(go.transform, false);
-        quad.transform.localScale = new Vector3(0.12f, 0.12f, 1f);
-        Object.Destroy(quad.GetComponent<Collider>());
-        quad.GetComponent<MeshRenderer>().sharedMaterial = _sparkMat;
-        Kill(go, 0.03f);
+        Place(at, Quaternion.LookRotation(direction), 0.12f, _sparkMat, 0.03f);
     }
 
     /// <summary>An impact: a spark flash, and a decal when it lands on geometry.</summary>
     public static void Impact(Vector3 point, Vector3 normal, bool decal)
     {
         Ensure();
-        var go = new GameObject("impact");
-        go.transform.SetParent(_root, false);
-        go.transform.position = point + normal * 0.01f;
-        go.transform.rotation = Quaternion.LookRotation(-normal);
-        var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
-        quad.transform.SetParent(go.transform, false);
-        quad.transform.localScale = decal ? Vector3.one * 0.09f : Vector3.one * 0.05f;
-        Object.Destroy(quad.GetComponent<Collider>());
-        quad.GetComponent<MeshRenderer>().sharedMaterial = decal ? _decalMat : _sparkMat;
-        Kill(go, decal ? 25f : 0.06f);
+        Place(point + normal * 0.01f, Quaternion.LookRotation(-normal), decal ? 0.09f : 0.05f,
+              decal ? _decalMat : _sparkMat, decal ? 25f : 0.06f);
     }
 }
 
@@ -143,7 +203,16 @@ public class Enemy : MonoBehaviour
         var target = _player.position + Vector3.up * PlayerTuning.Stand.Eye;
         var toPlayer = target - self;
         float distance = toPlayer.magnitude;
-        bool canSee = distance <= sightRange && HasLineOfSight(self, target);
+
+        // Sight is a raycast against a 1.8M-triangle level. Seven enemies casting
+        // that every frame is most of the frame budget on its own, and a sight
+        // check twice a second is indistinguishable in play.
+        if (Time.time >= _nextSightCheck || distance > sightRange)
+        {
+            _nextSightCheck = Time.time + 0.2f;
+            _canSee = distance <= sightRange && HasLineOfSight(self, target);
+        }
+        bool canSee = _canSee;
 
         if (canSee) _alerted = Time.time - _alerted < 0.01f ? _alerted : Time.time;
         bool aware = canSee || Time.time - _lastSeen < 3f;
@@ -179,6 +248,8 @@ public class Enemy : MonoBehaviour
     }
 
     float _lastSeen = -10f;
+    float _nextSightCheck;
+    bool _canSee;
 
     void ApplyGravity()
     {
@@ -205,7 +276,7 @@ public class Enemy : MonoBehaviour
             muzzleFlash.enabled = true;
             Invoke(nameof(KillFlash), 0.04f);
         }
-        if (fireClip) AudioSource.PlayClipAtPoint(fireClip, from, 0.7f);
+        if (fireClip) Sfx.Play(fireClip, from, 0.7f);
 
         // Spread is applied to the direction, then a ray decides the hit: the
         // player has to be able to be missed.
@@ -247,7 +318,7 @@ public class Enemy : MonoBehaviour
         // Tip over: not a ragdoll, but unmistakably dead.
         transform.rotation *= Quaternion.Euler(88f, 0f, Random.Range(-12f, 12f));
         transform.position += Vector3.down * 0.45f;
-        if (deathClip) AudioSource.PlayClipAtPoint(deathClip, transform.position, 0.8f);
+        if (deathClip) Sfx.Play(deathClip, transform.position, 0.8f);
     }
 }
 
@@ -286,7 +357,7 @@ public class PlayerHealth : MonoBehaviour
         if (Health <= 0f) return;
         Health -= amount;
         LastHitAt = Time.time;
-        if (hurtClip) AudioSource.PlayClipAtPoint(hurtClip, transform.position, 0.5f);
+        if (hurtClip) Sfx.Play(hurtClip, transform.position, 0.5f);
         _ = from;
         if (Health <= 0f) Die();
     }
@@ -295,7 +366,7 @@ public class PlayerHealth : MonoBehaviour
     {
         Health = 0f;
         Deaths++;
-        if (deathClip) AudioSource.PlayClipAtPoint(deathClip, transform.position, 0.8f);
+        if (deathClip) Sfx.Play(deathClip, transform.position, 0.8f);
         var cc = GetComponent<CharacterController>();
         if (cc) cc.enabled = false;
         transform.position = _spawn;

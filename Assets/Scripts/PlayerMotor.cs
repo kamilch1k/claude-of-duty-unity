@@ -53,10 +53,26 @@ public class PlayerMotor : MonoBehaviour
         _cc = GetComponent<CharacterController>();
         _yaw = transform.eulerAngles.y;
         ApplyStance(PlayerTuning.Stand, instant: true);
+        Lock(true);
+    }
+
+    void OnDisable() => Lock(false);
+
+    /// <summary>
+    /// Capture the mouse. There is no menu yet, so Escape is the only way out —
+    /// and the state has to be republished every frame, because the editor
+    /// releases the cursor on its own when focus moves.
+    /// </summary>
+    static void Lock(bool on)
+    {
+        Cursor.lockState = on ? CursorLockMode.Locked : CursorLockMode.None;
+        Cursor.visible = !on;
     }
 
     void Update()
     {
+        if (Input.GetKeyDown(KeyCode.Escape)) Lock(false);
+        if (Input.GetMouseButtonDown(0) && Cursor.lockState != CursorLockMode.Locked) Lock(true);
         TickLook();
         TickStance();
         TickMove();
