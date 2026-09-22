@@ -167,6 +167,14 @@ public static class PortPipeline
 
         mat.SetFloat("_Tiling", tilesPerMetre);
         mat.SetFloat("_Ambient", 1f);
+        // World surfaces project in WORLD space; weapon surfaces in object space.
+        //
+        // That is upstream's own split: the weapon materials set `localSpace:
+        // true` because the gun moves with the camera, and the world kit does
+        // not because its pieces are unit boxes with scale baked into the
+        // transform — projecting those in object space stretches the tile by the
+        // box's scale, which is exactly what it did before this line existed.
+        mat.SetFloat("_WorldSpace", kind == "weapon" ? 0f : 1f);
         // ENV_OCCLUSION: a shouldered weapon sees about a quarter of the sky.
         mat.SetFloat("_EnvIntensity", kind == "weapon" ? 0.24f : 1f);
 

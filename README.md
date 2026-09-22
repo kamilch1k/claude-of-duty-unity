@@ -16,7 +16,9 @@ generators in Chromium and writes real assets this project imports.
 | Triplanar URP shader (vertex masks, roughness remap, env specular, alpha clip) | **done** |
 | Viewmodel light rig (key/fill/rim/bounce + hemisphere, view-space) | **done**, in the shader |
 | Material + prefab build from the bakes | **done**, verified by in-editor render |
-| Player movement tuning | data ported, controller not written |
+| Player movement tuning | **done** — `PlayerTuning.cs`, transcribed from tuning.js |
+| Player motor (walk/sprint/tac-sprint/crouch/jump/look/FOV) | **done**, `PlayerMotor.cs` |
+| Test range scene with the rifle in first person | **done**, `Assets/Scenes/TestRange.unity` |
 | World geometry (market street, buildings, interiors, props) | not started |
 | Skinned soldiers + animation clips | not started |
 | Weapon definitions, ballistics, AI | not started |
@@ -101,6 +103,15 @@ re-measured rather than tuned around.
 **Audio is baked dry.** One-shots carry no reverb send, because Unity
 spatialises and reverbs them itself. The five impulses (`ir_tight` … `ir_open`)
 are there for Unity's reverb to convolve with, but nothing wires them up yet.
+
+**The viewmodel composite is not wired.** `TestRange` renders the world pass and
+the viewmodel pass separately and correctly — the weapon sits where
+`WEAPON_DEFS.hipPos`/`hipRot` put it, at its own 60° FOV on its own layer — but
+two manual `Camera.Render()` calls into one target do not composite under URP
+the way they do under the built-in pipeline: the second pass takes the colour
+buffer with it. The fix is URP camera stacking (base camera + overlay camera),
+which is how the port should do it anyway. Until then `scene_worldonly.png` and
+`scene_firstperson.png` are the two halves, not the composite.
 
 ## Attribution
 
